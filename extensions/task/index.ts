@@ -7,6 +7,7 @@ import * as GoalChecker from "./goal-checker.js";
 import * as Evidence from "./goal-evidence.js";
 import * as GoalUser from "./goal-user.js";
 import * as GoalStore from "./goal-store.js";
+import * as GoalRoleEntry from "./goal-role-entry.js";
 import * as GoalStreamDisplay from "./goal-stream-display.js";
 import * as ChoicePicker from "./choice-picker.js";
 import * as Launch from "./launch.js";
@@ -61,6 +62,18 @@ function setStatus(ctx: ExtensionContext, task?: Task.T): void {
   if (ctx.hasUI) ctx.ui.setStatus("task", task ? ctx.ui.theme.fg("accent", Task.formatStatus(task)) : undefined);
 }
 
+function showTaskRole(runtime: Runtime, { active, ctx, role }: ActiveContext & { role: GoalStreamDisplay.Role }): void {
+  const previous = active.display.state.active;
+  if (previous === role) return;
+  if (ctx.mode === "tui") {
+    if (previous === "implementer" || previous === "dialog")
+      GoalRoleEntry.mark(runtime.pi, { edge: "end", kind: previous === "dialog" ? "evidence" : "work" });
+    if (role === "implementer" || role === "dialog")
+      GoalRoleEntry.mark(runtime.pi, { edge: "start", kind: role === "dialog" ? "evidence" : "work" });
+  }
+  GoalStreamDisplay.showRole(active.display, role);
+}
+
 function saveRecord(
   runtime: Runtime,
   { active, ctx }: ActiveContext,
@@ -89,6 +102,7 @@ async function stop(
 ): Promise<void> {
   if (runtime.task !== active) return;
   runtime.task = undefined;
+  showTaskRole(runtime, { active, ctx, role: "none" });
   if (complete) {
     const removed = runtime.store.remove(active.record.id);
     if (Result.isFailure(removed))
@@ -126,7 +140,7 @@ function resume(runtime: Runtime, { active, ctx }: ActiveContext): void {
   if (runtime.task !== active || active.state.phase !== "backoff") return;
   const prompt = Task.buildContinuation(active.state, Session.listUserUpdates(active));
   Session.transition(active, Task.work(active.state));
-  GoalStreamDisplay.showRole(active.display, "implementer");
+  showTaskRole(runtime, { active, ctx, role: "implementer" });
   setStatus(ctx, active.state);
   runtime.pi.sendUserMessage(prompt);
 }
@@ -139,7 +153,7 @@ async function requestEvidence(
     return "Evidence dialog is available only during verification.";
   const answer = Session.openEvidence(active, signal);
   if (Result.isFailure(answer)) return answer.error.message;
-  GoalStreamDisplay.showRole(active.display, "dialog");
+  showTaskRole(runtime, { active, ctx, role: "dialog" });
   if (ctx.hasUI)
     ctx.ui.setStatus(
       "task",
@@ -156,7 +170,7 @@ async function requestEvidence(
   );
   const response = await answer.value;
   if (runtime.task === active) {
-    GoalStreamDisplay.showRole(active.display, "evaluator");
+    showTaskRole(runtime, { active, ctx, role: "evaluator" });
     setStatus(ctx, active.state);
   }
   return response;
@@ -172,7 +186,7 @@ function scheduleCheckerRetry(runtime: Runtime, { active, ctx, failed, error, re
   if (runtime.task !== active) return;
   const waiting = Task.retryChecker(failed, error);
   Session.transition(active, waiting);
-  GoalStreamDisplay.showRole(active.display, "none");
+  showTaskRole(runtime, { active, ctx, role: "none" });
   setStatus(ctx, waiting);
   notify(ctx, {
     message: `Task goal: checker ${waiting.target} failed — ${waiting.error}; retrying in ${waiting.delayMs / 1000}s`,
@@ -192,7 +206,7 @@ async function checkWorkspace(
   { active, ctx, checking }: ActiveContext & { checking: Task.Checking },
 ): Promise<void> {
   if (!active.checker) return;
-  GoalStreamDisplay.showRole(active.display, "evaluator");
+  showTaskRole(runtime, { active, ctx, role: "evaluator" });
   const run = Session.beginCheckerRun(active);
   const pending = runtime.checkerModule.evaluate(active.checker, run.signal);
   Session.trackCheckerRun(active, pending);
@@ -221,7 +235,7 @@ async function checkWorkspace(
     )
     .with({ type: "Success", value: { complete: false } }, ({ value }) => {
       Session.transition(active, Task.scheduleBackoff(checking, value));
-      GoalStreamDisplay.showRole(active.display, "none");
+      showTaskRole(runtime, { active, ctx, role: "none" });
       setStatus(ctx, active.state);
       Session.scheduleRetry(active, () => resume(runtime, { active, ctx }));
     })
@@ -279,7 +293,7 @@ function buildCheckerConfig(
 }
 
 async function initialize(runtime: Runtime, { active, ctx }: ActiveContext): Promise<void> {
-  GoalStreamDisplay.showRole(active.display, "evaluator");
+  showTaskRole(runtime, { active, ctx, role: "evaluator" });
   const revision = active.userRevision;
   const config = buildCheckerConfig(runtime, { active, ctx });
   if (Result.isFailure(config))
@@ -343,7 +357,7 @@ async function initialize(runtime: Runtime, { active, ctx }: ActiveContext): Pro
   const prompt = Task.buildStartPrompt(active.state, Session.listUserUpdates(active));
   const images = Session.takeQueuedImages(active);
   Session.transition(active, Task.work(active.state));
-  GoalStreamDisplay.showRole(active.display, "implementer");
+  showTaskRole(runtime, { active, ctx, role: "implementer" });
   setStatus(ctx, active.state);
   runtime.pi.sendUserMessage(images.length ? [{ text: prompt, type: "text" }, ...images] : prompt);
 }
@@ -381,9 +395,7 @@ async function resumeSaved(runtime: Runtime, { id, ctx }: { id?: string; ctx: Ex
     !id && ctx.hasUI
       ? await ChoicePicker.choose({
           choices: available.map(GoalStore.format),
-          clearLabel: "Show all goals",
           ctx,
-          searchLabel: "Search goals…",
           searchPlaceholder: "goal text or ID",
           searchTitle: "Search goals",
           signal: selection.signal,
@@ -568,6 +580,7 @@ function shutdown(runtime: Runtime, ctx: ExtensionContext): void {
 // Pi's extension loader discovers this module through its default export.
 export default function registerTaskExtension(pi: ExtensionAPI, options: Options = {}): void {
   if (process.env.PI_TASK_GOAL_CHILD === "1") return Evidence.register(pi);
+  GoalRoleEntry.register(pi);
   const runtime: Runtime = {
     checkerModule: options.goalChecker ?? GoalChecker,
     launchArgv: process.argv.slice(2),
@@ -612,21 +625,21 @@ export default function registerTaskExtension(pi: ExtensionAPI, options: Options
         if (active.evidence) return { action: "continue" as const };
         Session.cancelCheckerRun(active);
         Session.transition(active, Task.steer(state));
-        GoalStreamDisplay.showRole(active.display, "implementer");
+        showTaskRole(runtime, { active, ctx, role: "implementer" });
         setStatus(ctx, active.state);
         return { action: "continue" as const };
       })
       .with({ phase: "backoff" }, (state) => {
         Session.cancelRetry(active);
         Session.transition(active, Task.steer(state));
-        GoalStreamDisplay.showRole(active.display, "implementer");
+        showTaskRole(runtime, { active, ctx, role: "implementer" });
         setStatus(ctx, active.state);
         return { action: "continue" as const };
       })
       .with({ phase: "checker-retry", target: "checking" }, (state) => {
         Session.cancelRetry(active);
         Session.transition(active, Task.steer(state));
-        GoalStreamDisplay.showRole(active.display, "implementer");
+        showTaskRole(runtime, { active, ctx, role: "implementer" });
         setStatus(ctx, active.state);
         return { action: "continue" as const };
       })
@@ -639,9 +652,6 @@ export default function registerTaskExtension(pi: ExtensionAPI, options: Options
   pi.on("message_update", (event) => {
     if (runtime.task && event.assistantMessageEvent.type === "text_delta")
       GoalStreamDisplay.showWorkerText(runtime.task.display, event.assistantMessageEvent.delta);
-  });
-  pi.on("tool_execution_start", (event) => {
-    if (runtime.task) GoalStreamDisplay.showWorkerTool(runtime.task.display, event.toolName);
   });
   pi.on("agent_settled", (event, ctx) => {
     // The checker may wait for a new main-agent turn; do not block this event.

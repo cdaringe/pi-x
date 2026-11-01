@@ -35,14 +35,31 @@ function createHarness(
       }
     | undefined;
   const sendUserMessage = vi.fn();
+  const appendEntry = vi.fn();
   const select = vi.fn(async (_title: string, choices: string[]): Promise<string | undefined> => choices[0]);
   let context: ExtensionContext;
+  const custom = vi.fn(async (factory: (...args: any[]) => any): Promise<string | undefined> => {
+    let selected: string | undefined;
+    const component = await factory(
+      { requestRender: vi.fn(), terminal: { rows: 24 } },
+      context.ui.theme,
+      { matches: (data: string, action: string) => data === "\r" && action === "tui.select.confirm" },
+      (value: string | undefined) => {
+        selected = value;
+      },
+    );
+    component.render(100);
+    component.handleInput("\r");
+    component.dispose?.();
+    return selected;
+  });
   const setModel = vi.fn(async (model: NonNullable<ExtensionContext["model"]>) => {
     context.model = model;
     return true;
   });
 
   const pi = {
+    appendEntry,
     on: (name: string, handler: EventHandler) => {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
       return () => {};
@@ -50,6 +67,7 @@ function createHarness(
     registerCommand: (_name: string, registered: typeof command) => {
       command = registered;
     },
+    registerEntryRenderer: vi.fn(),
     registerShortcut: vi.fn(),
     registerTool: (tool: { name: string }) => registeredTools.set(tool.name, tool),
     sendUserMessage,
@@ -74,6 +92,7 @@ function createHarness(
     thinkingLevel: "medium",
     ui: {
       confirm,
+      custom,
       input,
       notify,
       select,
@@ -89,9 +108,11 @@ function createHarness(
   };
 
   return {
+    appendEntry,
     command: (args: string) => command!.handler(args, context),
     confirm,
     context,
+    custom,
     emit,
     goalStore,
     input,
@@ -162,11 +183,7 @@ describe("goal task loop", () => {
     await harness.command('--goal "program device" -d');
     await harness.command("--stop");
     await harness.command("--resume");
-    expect(harness.select).toHaveBeenCalledWith(
-      "Resume goal",
-      [expect.stringContaining("program device")],
-      expect.anything(),
-    );
+    expect(harness.custom).toHaveBeenCalledOnce();
     expect(checker.evaluate).toHaveBeenCalledOnce();
     expect(harness.sendUserMessage).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1000);
@@ -186,7 +203,7 @@ describe("goal task loop", () => {
     );
     harness.goalStore.write(record);
     await harness.command(`--resume ${record.id.slice(0, 8)}`);
-    expect(harness.select).toHaveBeenCalledTimes(2);
+    expect(harness.custom).toHaveBeenCalledTimes(2);
     expect([...harness.records.values()][0]?.models).toEqual({
       checker: "test/model",
       implementer: "test/model",
@@ -391,8 +408,10 @@ describe("goal task loop", () => {
     await harness.command('--goal "program device" -d');
     await harness.emit("agent_settled", { aborted: false });
     const widget = harness.setWidget.mock.calls[0]?.[1]({ requestRender: vi.fn() }, harness.context.ui.theme);
-    expect(widget.render(100)[0]).toContain("Implementer");
-    expect(widget.render(100)[0]).toContain("Evaluator");
+    expect(harness.setStatus).toHaveBeenCalledWith("task-roles", expect.stringContaining("Implementer answering"));
+    expect(widget.render(100)[0]).toContain("Evidence exchange");
+    expect(widget.render(100)[1]).toContain("Implementer");
+    expect(widget.render(100)[1]).toContain("Evaluator");
     await harness.emit("message_update", {
       assistantMessageEvent: { delta: "Checking the device", type: "text_delta" },
     });
@@ -588,6 +607,7 @@ describe("goal task loop", () => {
   it("asks for both omitted models in interactive mode", async () => {
     const checker = createChecker();
     const harness = createHarness({ goalChecker: checker, launchArgs: [] });
+    harness.context.mode = "rpc";
     harness.select.mockResolvedValueOnce("impl/fast").mockResolvedValueOnce("audit/thorough");
     await harness.command('--goal "fix tests"');
     expect(harness.select).toHaveBeenCalledTimes(2);
@@ -611,32 +631,33 @@ describe("goal task loop", () => {
     await harness.emit("session_shutdown");
   });
 
-  it("pages large model catalogs without overflowing the Pi selector", async () => {
+  it("passes the full model catalog to an RPC selector", async () => {
     const models = [
       { id: "base", provider: "test" },
       ...Array.from({ length: 12 }, (_, index) => ({ id: `model${index + 1}`, provider: "test" })),
     ];
     const harness = createHarness({ goalChecker: createChecker(), launchArgs: [] }, models);
-    harness.select.mockResolvedValueOnce("Next page →").mockResolvedValueOnce("test/model7");
+    harness.context.mode = "rpc";
+    harness.select.mockResolvedValueOnce("test/model7");
     await harness.command('--goal "fix tests" --checker-model test/base');
-    expect(harness.select).toHaveBeenCalledTimes(2);
-    expect(harness.select.mock.calls.every(([, choices]) => choices.length <= 7)).toBe(true);
-    expect(harness.select.mock.calls[1]?.[1]).toContain("test/model7");
+    expect(harness.select).toHaveBeenCalledOnce();
+    expect(harness.select.mock.calls[0]?.[1]).toHaveLength(13);
+    expect(harness.select.mock.calls[0]?.[1]).toContain("test/model7");
     expect(harness.setModel).toHaveBeenCalledWith({ id: "model7", provider: "test" });
     await harness.command("--stop");
   });
 
-  it("filters a large model catalog by search", async () => {
+  it("lets an RPC client choose a distant model directly", async () => {
     const models = [
       { id: "base", provider: "test" },
       ...Array.from({ length: 12 }, (_, index) => ({ id: `model${index + 1}`, provider: "test" })),
     ];
     const harness = createHarness({ goalChecker: createChecker(), launchArgs: [] }, models);
-    harness.select.mockResolvedValueOnce("Search models…").mockResolvedValueOnce("test/model12");
-    harness.input.mockResolvedValueOnce("model12");
+    harness.context.mode = "rpc";
+    harness.select.mockResolvedValueOnce("test/model12");
     await harness.command('--goal "fix tests" --checker-model test/base');
-    expect(harness.input).toHaveBeenCalledWith("Search model IDs", "provider/model", expect.anything());
-    expect(harness.select.mock.calls[1]?.[1]).toEqual(expect.arrayContaining(["test/model12", "Show all models"]));
+    expect(harness.input).not.toHaveBeenCalled();
+    expect(harness.select).toHaveBeenCalledOnce();
     expect(harness.setModel).toHaveBeenCalledWith({ id: "model12", provider: "test" });
     await harness.command("--stop");
   });
@@ -663,6 +684,7 @@ describe("goal task loop", () => {
   it("does not start when model selection is cancelled", async () => {
     const checker = createChecker();
     const harness = createHarness({ goalChecker: checker, launchArgs: [] });
+    harness.context.mode = "rpc";
     harness.select.mockResolvedValueOnce(undefined);
     await harness.command('--goal "fix tests"');
     expect(checker.create).not.toHaveBeenCalled();
@@ -750,13 +772,26 @@ describe("goal task loop", () => {
 
     await harness.command('--goal "implement checkout"');
     expect(order.slice(0, 2)).toEqual(["initialize", "send"]);
+    expect(harness.appendEntry).toHaveBeenCalledWith("task-implementer-boundary", {
+      edge: "start",
+      kind: "work",
+    });
     expect(harness.setWidget).toHaveBeenCalledWith("task-goal-stream", expect.any(Function));
-    await harness.command("--evaluator");
     const widget = harness.setWidget.mock.calls[0]?.[1]({ requestRender: vi.fn() }, harness.context.ui.theme);
+    expect(widget.render(120)).toEqual([]);
+    expect(harness.setStatus).toHaveBeenCalledWith("task-roles", expect.stringContaining("Implementer"));
+    await harness.emit("tool_execution_start", { toolName: "read" });
+    expect(widget.render(120)).toEqual([]);
+
+    await harness.command("--evaluator");
     expect(widget.render(120).join("\n")).toContain("- [ ] Run integration tests");
 
     await harness.emit("agent_settled", { aborted: false });
     expect(order).toContain("evaluate-incomplete");
+    expect(harness.appendEntry).toHaveBeenCalledWith("task-implementer-boundary", {
+      edge: "end",
+      kind: "work",
+    });
     expect(harness.sendUserMessage).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1000);
     expect(harness.sendUserMessage).toHaveBeenLastCalledWith(

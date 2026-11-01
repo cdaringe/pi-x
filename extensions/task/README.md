@@ -20,7 +20,7 @@ Adds `/task` to work toward a goal until an independent evaluator verifies compl
 
 In interactive Pi, each omitted model opens a selection dialog. `--implementer-model` selects the main agent's model for this task; `--checker-model` selects the independent checker's model. Use `provider/id` from Pi's available models. `-d` (or `--defaults`) skips dialogs: an omitted implementer uses the current session model, and an omitted checker uses the selected implementer model. Explicit model flags skip their corresponding dialogs. In noninteractive modes, provide both model flags or use `-d`. The extension restores the previous session model when the task ends within the session.
 
-Large model catalogs are shown four models per page. Choose `Next page →` or `← Previous page` to browse, or `Search models…` to filter by provider or model ID. The same bounded picker works in Pi's terminal and RPC dialogs.
+In the terminal, the model picker uses the available height and scrolls automatically as you move with **↑/↓** or **Page Up/Down**. Type to filter by provider or model ID; resizing the terminal changes how many models are visible. The resume picker works the same way. RPC clients receive the complete choice list and control their own scrolling.
 
 ```text
 /task --goal "implement the cart feature and verify it end to end"
@@ -30,9 +30,9 @@ Use the equals form for a goal beginning with a hyphen, for example `/task --goa
 
 Send an ordinary message to add information or change the active goal. Pi delivers it to the implementer. During planning, the extension queues the message and refreshes the checklist before work starts. During verification, the message cancels the current check; the implementer handles the update, then the checker verifies again. During backoff, the message resumes work immediately. Use `/task --status` to see the current phase and `/task --stop` to pause the task. Stopping or shutting down the session cancels pending retries and aborts an active checker.
 
-The active role animates into a compact panel above the editor. The evaluator appears as a collapsed footer status while the implementer works; use `/task --evaluator` or **Ctrl+Alt+E** to expand or collapse its detail. During an evidence request, the implementer and evaluator appear in separate columns. Narrow terminals stack the two panels. The evaluator panel closes during goal backoff and opens again when checking resumes.
+The implementer's full stream is Pi's normal transcript. `╭─ IMPLEMENTER` and `╰─ IMPLEMENTER` entries bracket each work or evidence reply, including its messages and tool calls. An animated footer status names the active role. The evaluator stays collapsed in the footer during planning and checking; use `/task --evaluator` or **Ctrl+Alt+E** to expand its detail. During an evidence request, a separate two-column view shows only recent activity from the exchange. The implementer animates while answering; the evaluator is marked as waiting. Its heading distinguishes that excerpt from the full implementer run in the transcript. Narrow terminals stack the two excerpts. The exchange view closes when the reply ends.
 
-When the implementer needs information or a physical action, it can call `task_ask_user`. Pi pauses that implementing run and shows a confirmation or text input dialog. For example, the implementer can ask you to turn on a device and confirm when it is ready. A declined or dismissed dialog is reported to the implementer; it does not count as confirmation. The dialog requires a Pi UI. In a mode without one, the tool reports that the request cannot be shown.
+When the implementer needs information or a physical action, it can call `task_ask_user`. Pi pauses that implementing run and shows a confirmation or text input dialog. For example, the implementer can ask you to turn on a device and confirm when it is ready. A declined or dismissed dialog is reported to the implementer; it does not count as confirmation. The dialog requires a Pi UI. In a mode without one, the tool reports that the request cannot be shown. While this prompt is open, there is no task retry timer running. If the checker requested the evidence, its 10-minute active-work clock is paused until the implementer's answer returns to the same checker run.
 
 ## Resume an unfinished goal
 
@@ -166,7 +166,7 @@ The footer's `task` slot shows the current phase, for example:
 - `↻ task goal retrying in 2s (2)`
 - `↻ task goal checker retrying in 1s (1)`
 
-The evaluator has its own footer slot: `Evaluator ▸` means its detail is collapsed, `Evaluator ▾` means it is expanded, and `Evaluator ↔ Implementer` means they are exchanging evidence.
+The role footer shows `Implementer · Evaluator ▸` while the implementer works, `Evaluator ▾` when evaluator detail is expanded, and `Implementer answering · Evaluator waiting` during an evidence exchange.
 
 Only one task can be active in a session at a time.
 

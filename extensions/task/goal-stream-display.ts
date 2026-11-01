@@ -4,7 +4,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type * as GoalChecker from "./goal-checker.js";
 
 type Part = Readonly<{ text: string; type: "line" | "text" }>;
-type Role = "none" | "implementer" | "evaluator" | "dialog";
+export type Role = "none" | "implementer" | "evaluator" | "dialog";
 type Theme = Pick<ExtensionContext["ui"]["theme"], "fg">;
 
 export interface State {
@@ -92,7 +92,7 @@ export function applyUpdate(state: State, update: GoalChecker.Update): State {
 export const focus = (state: State, active: Role): State => ({
   ...state,
   active,
-  checkerVisible: active === "evaluator" || active === "dialog",
+  checkerVisible: active === "dialog" || (active !== "none" && state.active !== "dialog" && state.checkerVisible),
   frame: 0,
   reveal: 0,
   workerParts:
@@ -104,11 +104,6 @@ export const focus = (state: State, active: Role): State => ({
 export const recordWorkerText = (state: State, text: string): State => ({
   ...state,
   workerParts: appendText(state.workerParts, text).slice(-50),
-});
-
-const recordWorkerTool = (state: State, name: string): State => ({
-  ...state,
-  workerParts: [...state.workerParts, { text: `→ ${name}`, type: "line" as const }].slice(-50),
 });
 
 const toggleEvaluator = (state: State): State => ({ ...state, checkerVisible: !state.checkerVisible });
@@ -137,7 +132,7 @@ function renderPanel({
   width: number;
 }): string[] {
   const indicator = active ? `${frames[state.frame % frames.length]} ` : "○ ";
-  const color = title === "Implementer" ? "success" : "accent";
+  const color = active ? (title === "Implementer" ? "success" : "accent") : "muted";
   const heading = theme.fg(color, `${indicator}${title}`);
   const lines = renderLines(parts, width);
   const visible = active ? (state.reveal ? lines.slice(-state.reveal) : []) : lines;
@@ -149,7 +144,7 @@ function renderColumns(state: State, width: number, theme: Theme): string[] {
   const leftWidth = Math.floor((width - visibleWidth(divider)) / 2);
   const rightWidth = width - leftWidth - visibleWidth(divider);
   const left = renderPanel({
-    active: state.active === "implementer" || state.active === "dialog",
+    active: true,
     parts: state.workerParts,
     state,
     theme,
@@ -157,7 +152,7 @@ function renderColumns(state: State, width: number, theme: Theme): string[] {
     width: leftWidth,
   });
   const right = renderPanel({
-    active: state.active === "evaluator" || state.active === "dialog",
+    active: false,
     parts: state.parts,
     state,
     theme,
@@ -173,22 +168,16 @@ function renderColumns(state: State, width: number, theme: Theme): string[] {
 
 export function render(state: State, width: number, theme: Theme): string[] {
   if (width < 1 || (state.active === "none" && !state.checkerVisible)) return [];
-  if (state.active === "dialog" || (state.active === "implementer" && state.checkerVisible))
-    return width >= 72
-      ? renderColumns(state, width, theme)
-      : [
-          ...renderPanel({ active: true, parts: state.workerParts, state, theme, title: "Implementer", width }),
-          ...renderPanel({
-            active: state.active === "dialog",
-            parts: state.parts,
-            state,
-            theme,
-            title: "Evaluator",
-            width,
-          }),
-        ];
-  if (state.active === "implementer")
-    return renderPanel({ active: true, parts: state.workerParts, state, theme, title: "Implementer", width });
+  if (state.active === "dialog")
+    return [
+      truncateToWidth(theme.fg("muted", "Evidence exchange · Implementer answering · Evaluator waiting"), width),
+      ...(width >= 72
+        ? renderColumns(state, width, theme)
+        : [
+            ...renderPanel({ active: true, parts: state.workerParts, state, theme, title: "Implementer", width }),
+            ...renderPanel({ active: false, parts: state.parts, state, theme, title: "Evaluator", width }),
+          ]),
+    ];
   return state.checkerVisible
     ? renderPanel({ active: state.active === "evaluator", parts: state.parts, state, theme, title: "Evaluator", width })
     : [];
@@ -196,11 +185,20 @@ export function render(state: State, width: number, theme: Theme): string[] {
 
 function updateStatus(display: T): void {
   if (!display.ctx.hasUI) return;
-  const label = display.state.active === "dialog" ? "Evaluator ↔ Implementer" : "Evaluator";
   const control = display.ctx.mode === "tui" ? "Ctrl+Alt+E" : "/task --evaluator";
+  const indicator = frames[display.state.frame % frames.length];
+  const label = match(display.state.active)
+    .with(
+      "implementer",
+      () => `${indicator} Implementer · Evaluator ${display.state.checkerVisible ? "▾" : "▸"} ${control}`,
+    )
+    .with("evaluator", () => `${indicator} Evaluator ${display.state.checkerVisible ? "▾" : "▸"} ${control}`)
+    .with("dialog", () => `${indicator} Implementer answering · ○ Evaluator waiting`)
+    .with("none", () => `Evaluator ${display.state.checkerVisible ? "▾" : "▸"} ${control}`)
+    .exhaustive();
   display.ctx.ui.setStatus(
-    "task-evaluator",
-    display.ctx.ui.theme.fg("muted", `${label} ${display.state.checkerVisible ? "▾" : "▸"} ${control}`),
+    "task-roles",
+    display.ctx.ui.theme.fg(display.state.active === "none" ? "muted" : "accent", label),
   );
 }
 
@@ -210,6 +208,7 @@ function tick(display: T): void {
     frame: display.state.frame + 1,
     reveal: Math.min(display.state.reveal + 1, 7),
   };
+  updateStatus(display);
   display.requestRender?.();
 }
 
@@ -226,7 +225,10 @@ export function flush(display: T): void {
   display.timer = undefined;
   if (!display.ctx.hasUI) return;
   if (display.ctx.mode === "tui") display.requestRender?.();
-  else display.ctx.ui.setWidget(key, render(display.state, 80, display.ctx.ui.theme));
+  else {
+    const lines = render(display.state, 80, display.ctx.ui.theme);
+    display.ctx.ui.setWidget(key, lines.length ? lines : undefined);
+  }
 }
 
 export function showRole(display: T, role: Role): void {
@@ -239,16 +241,10 @@ export function showRole(display: T, role: Role): void {
 }
 
 export function showWorkerText(display: T, text: string): void {
-  if (!display.ctx.hasUI || (display.state.active !== "implementer" && display.state.active !== "dialog")) return;
+  if (!display.ctx.hasUI || display.state.active !== "dialog") return;
   display.state = recordWorkerText(display.state, text);
   if (!display.timer) display.timer = setTimeout(() => flush(display), 40);
   display.timer?.unref?.();
-}
-
-export function showWorkerTool(display: T, name: string): void {
-  if (!display.ctx.hasUI || (display.state.active !== "implementer" && display.state.active !== "dialog")) return;
-  display.state = recordWorkerTool(display.state, name);
-  flush(display);
 }
 
 export function update(display: T, update: GoalChecker.Update): void {
@@ -272,7 +268,7 @@ export function clear(display: T): void {
   display.timer = undefined;
   display.animation = undefined;
   if (display.ctx.hasUI) {
-    display.ctx.ui.setStatus("task-evaluator", undefined);
+    display.ctx.ui.setStatus("task-roles", undefined);
     display.ctx.ui.setWidget(key, undefined);
   }
 }

@@ -199,6 +199,7 @@ async function runChecker({
     child.on("message", (value: unknown) => {
       const request = Evidence.parseRequest(value);
       if (!request) return;
+      // Evidence gathering may block on a user prompt; only checker work consumes this timeout.
       pauseTimer();
       const evidenceSignal = AbortSignal.any([signal, runController.signal]);
       void Promise.resolve()

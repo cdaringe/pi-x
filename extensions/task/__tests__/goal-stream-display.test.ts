@@ -47,22 +47,30 @@ describe("GoalStreamDisplay.applyUpdate", () => {
 
   it("collapses the idle evaluator and shows both roles in responsive columns during dialog", () => {
     const theme = { fg: (_color: string, text: string) => text };
-    const worker = Display.recordWorkerText(Display.focus(Display.createState(), "implementer"), "Writing the patch");
-    const checker = Display.applyUpdate(worker, { phase: "evaluation", text: "Need proof", type: "text" });
-    expect(Display.render({ ...checker, reveal: 7 }, 100, theme).join("\n")).not.toContain("Evaluator");
+    const worker = Display.focus(Display.createState(), "implementer");
+    const checker = Display.applyUpdate(Display.focus(worker, "evaluator"), {
+      phase: "evaluation",
+      text: "Need proof",
+      type: "text",
+    });
+    expect(Display.render({ ...checker, reveal: 7 }, 100, theme)).toEqual([]);
 
-    const dialog = Display.focus(checker, "dialog");
+    const dialog = Display.recordWorkerText(Display.focus(checker, "dialog"), "Answering the evidence request");
     const wide = Display.render({ ...dialog, reveal: 7 }, 100, theme);
     expect(wide.join("\n")).toContain("Implementer");
     expect(wide.join("\n")).toContain("Evaluator");
+    expect(wide.join("\n")).toContain("Answering the evidence request");
+    expect(wide[1]).toContain("○ Evaluator");
     expect(wide.every((line) => visibleWidth(line) <= 100)).toBe(true);
 
     const narrow = Display.render({ ...dialog, reveal: 7 }, 40, theme);
-    expect(narrow[0]).toContain("Implementer");
-    expect(narrow.some((line) => line.includes("Evaluator"))).toBe(true);
+    expect(narrow[0]).toContain("Evidence exchange");
+    expect(narrow[1]).toContain("Implementer");
+    expect(narrow.some((line) => line.includes("○ Evaluator"))).toBe(true);
+    expect(Display.render(Display.focus(dialog, "evaluator"), 100, theme)).toEqual([]);
   });
 
-  it("shows full evaluator detail in RPC without waiting for terminal animation", () => {
+  it("keeps evaluator activity collapsed until expanded in RPC", () => {
     const setStatus = vi.fn();
     const setWidget = vi.fn();
     const ctx = {
@@ -73,8 +81,11 @@ describe("GoalStreamDisplay.applyUpdate", () => {
     const display = Display.create(ctx);
     Display.update(display, { phase: "planning", text: "Inspecting files", type: "text" });
     Display.showRole(display, "evaluator");
+    expect(setWidget).toHaveBeenLastCalledWith("task-goal-stream", undefined);
+    expect(setStatus).toHaveBeenCalledWith("task-roles", expect.stringContaining("Evaluator ▸"));
+    Display.toggle(display);
     expect(setWidget).toHaveBeenLastCalledWith("task-goal-stream", expect.arrayContaining(["Inspecting files"]));
-    expect(setStatus).toHaveBeenCalledWith("task-evaluator", expect.stringContaining("/task --evaluator"));
+    expect(setStatus).toHaveBeenCalledWith("task-roles", expect.stringContaining("/task --evaluator"));
     Display.clear(display);
   });
 });

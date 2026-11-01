@@ -66,7 +66,7 @@ console.log(JSON.stringify({ type: "agent_settled", aborted: false }));
       await rm(directory, { force: true, recursive: true });
     }
   });
-  it("returns an implementer reply to the same checker process and run", async () => {
+  it("excludes an unanswered user prompt from the checker timeout and resumes the same run", async () => {
     const directory = await mkdtemp(join(tmpdir(), "goal-evidence-fixture-"));
     const fixture = join(directory, "checker.mjs");
     await writeFile(
@@ -90,6 +90,14 @@ if (request.includes("Create the independent acceptance checklist")) {
 `,
     );
     const requests: string[] = [];
+    let showPrompt!: () => void;
+    let answerPrompt!: () => void;
+    const promptShown = new Promise<void>((resolve) => {
+      showPrompt = resolve;
+    });
+    const promptAnswered = new Promise<void>((resolve) => {
+      answerPrompt = resolve;
+    });
     const created = await GoalChecker.create({
       cwd: directory,
       invocation: { args: [fixture], command: process.execPath },
@@ -98,7 +106,8 @@ if (request.includes("Create the independent acceptance checklist")) {
       prompt: "Verify the feature",
       requestEvidence: async (request) => {
         requests.push(request.question);
-        await new Promise((resolve) => setTimeout(resolve, 1200));
+        showPrompt();
+        await promptAnswered;
         return "npm test -- --run feature";
       },
       timeoutMs: 1000,
@@ -108,7 +117,11 @@ if (request.includes("Create the independent acceptance checklist")) {
       expect(await GoalChecker.initialize(created.value, new AbortController().signal)).toEqual(
         Result.succeed(undefined),
       );
-      expect(await GoalChecker.evaluate(created.value, new AbortController().signal)).toEqual(
+      const evaluation = GoalChecker.evaluate(created.value, new AbortController().signal);
+      await promptShown;
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      answerPrompt();
+      expect(await evaluation).toEqual(
         Result.succeed({
           complete: false,
           feedback: "npm test -- --run feature",
