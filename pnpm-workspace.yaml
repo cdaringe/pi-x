@@ -1,0 +1,6 @@
+packages:
+  - extensions/*
+  - skills/*
+allowBuilds:
+  "@google/genai": true
+  protobufjs: true

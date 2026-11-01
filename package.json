@@ -1,0 +1,43 @@
+{
+  "name": "pi-x",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Custom skills and extensions for the pi coding agent",
+  "keywords": [
+    "pi-package",
+    "thinking",
+    "reasoning"
+  ],
+  "author": "cdaringe",
+  "license": "MIT",
+  "engines": {
+    "node": "^22.19.0 || ^24.0.0 || >=26.0.0"
+  },
+  "workspaces": [
+    "extensions/*",
+    "skills/*"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "format": "biome check --write --linter-enabled=false .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "format:check": "biome check --linter-enabled=false .",
+    "knip": "knip"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.4",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@types/node": "^26.6.6",
+    "knip": "^6.44.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}
