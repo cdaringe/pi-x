@@ -28,9 +28,23 @@ In the terminal, the model picker uses the available height and scrolls automati
 
 Use the equals form for a goal beginning with a hyphen, for example `/task --goal="--repair the parser"`.
 
-Send an ordinary message to add information or change the active goal. Pi delivers it to the implementer. During planning, the extension queues the message and refreshes the checklist before work starts. During verification, the message cancels the current check; the implementer handles the update, then the checker verifies again. During backoff, the message resumes work immediately. Use `/task --status` to see the current phase and `/task --stop` to pause the task. Stopping or shutting down the session cancels pending retries and aborts an active checker.
+The line directly below the editor shows where your next message goes. **You → Implementer** means you are chatting with the main Pi agent, even if the evaluator view is open. During verification, sending a message interrupts the current check and sends it to the implementer; during backoff, it resumes the implementer immediately. During planning, the line reads **You → Goal update**: your message is queued for the planner and included when implementation starts. In an evidence exchange, your message goes to the implementer, who can relay evidence to the waiting evaluator through the extension. Use `/task --status` to see the current phase and `/task --stop` to pause it. Stopping or shutting down the session cancels pending retries and aborts an active checker.
 
-The implementer's full stream is Pi's normal transcript. `╭─ IMPLEMENTER` and `╰─ IMPLEMENTER` entries bracket each work or evidence reply, including its messages and tool calls. An animated footer status names the active role. The evaluator stays collapsed in the footer during planning and checking; use `/task --evaluator` or **Ctrl+Alt+E** to expand its detail. During an evidence request, a separate two-column view shows only recent activity from the exchange. The implementer animates while answering; the evaluator is marked as waiting. Its heading distinguishes that excerpt from the full implementer run in the transcript. Narrow terminals stack the two excerpts. The exchange view closes when the reply ends.
+The main Pi window remains the implementer's native transcript and editor. `╭─ IMPLEMENTER` and `╰─ IMPLEMENTER` entries bracket each work or evidence reply, including its messages and tool calls. An animated footer status names the active role. The evaluator uses a separate Pi process for planning and for each verification run; that process exits before normal implementation starts. Its view stays collapsed in the footer by default. Use `/task --evaluator` or **Ctrl+Alt+E** to open the actor view above the editor. When implementation starts, the evaluator view collapses automatically. Reopen it during implementation to inspect its last run; the pane is labeled **Evaluator idle · last run**. The view uses the available terminal height and shows assistant text with Pi's Markdown renderer, tool calls, and tool output. In fullscreen Pi, the mouse wheel scrolls the evaluator when the pointer is over its pane; elsewhere it scrolls Pi's transcript. Plain **Page Up/Down** remains bound to Pi's transcript. **Alt+Page Up/Down** pages through the evaluator in either TUI mode, and **Ctrl+Alt+K/J** moves ten lines. Scrolling holds the view on a snapshot until you return to Live. The evaluator view renders its Pi JSON stream inside the main UI; it does not embed a second interactive Pi session. During an evidence request, the view opens two columns for the implementer's reply and the waiting evaluator. Narrow terminals stack them. The checker continues in the same process after the reply is routed back through IPC.
+
+```mermaid
+flowchart LR
+    User --> Editor[Main Pi editor: recipient shown below]
+    Editor -->|implementation, verification, evidence| Main[Main Pi session: implementer]
+    Editor -->|planning goal update| Extension
+    Main --> Transcript[Native transcript and editor]
+    Checker[Checker Pi process: evaluator] -->|JSON stream| Widget[Expandable actor widget]
+    Main -->|evidence reply| Extension[Task extension: IPC router]
+    Checker -->|evidence request| Extension
+    Extension -->|question| Main
+    Extension -->|reply to same run| Checker
+    Main -->|reply stream during dialog| Widget
+```
 
 When the implementer needs information or a physical action, it can call `task_ask_user`. Pi pauses that implementing run and shows a confirmation or text input dialog. For example, the implementer can ask you to turn on a device and confirm when it is ready. A declined or dismissed dialog is reported to the implementer; it does not count as confirmation. The dialog requires a Pi UI. In a mode without one, the tool reports that the request cannot be shown. While this prompt is open, there is no task retry timer running. If the checker requested the evidence, its 10-minute active-work clock is paused until the implementer's answer returns to the same checker run.
 
@@ -137,7 +151,7 @@ Before implementation starts, the evaluator:
 2. Creates a private temporary Markdown checklist with concrete acceptance criteria.
 3. Adds a direct verification method to every checklist item.
 
-Planner text and tool activity stream into the evaluator panel while planning is active. When planning finishes, the panel retains the generated checklist behind its expandable status. Later evaluation runs reopen the panel and refresh it with the updated checklist.
+Planner text, tool calls, and tool output stream into the expandable evaluator view while planning is active. When planning finishes, the generated checklist follows that activity in the view. Later evaluation runs add their own activity and updated checklist.
 
 Whenever the main agent settles, a fresh evaluator run reads that checklist and inspects the live workspace. It is explicitly instructed to:
 
@@ -166,7 +180,7 @@ The footer's `task` slot shows the current phase, for example:
 - `↻ task goal retrying in 2s (2)`
 - `↻ task goal checker retrying in 1s (1)`
 
-The role footer shows `Implementer · Evaluator ▸` while the implementer works, `Evaluator ▾` when evaluator detail is expanded, and `Implementer answering · Evaluator waiting` during an evidence exchange.
+The role footer marks the active worker, for example `Active: Implementer · Evaluator idle ▸`, `Active: Evaluator running ▾`, or `Active: Implementer answering · Evaluator waiting`. The line below the editor names the recipient of your next message. **Ctrl+Alt+E** closes or opens the actor view; **Alt+Page Up/Down** or **Ctrl+Alt+K/J** scrolls its recent output.
 
 Only one task can be active in a session at a time.
 

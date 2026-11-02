@@ -19,7 +19,9 @@ const checklist = JSON.parse(match[1]);
 const planning = request.includes("Create the independent acceptance checklist");
 if (planning) await writeFile(checklist, "# Checklist\\n- [ ] Run the integration test\\n  - Verify: npm test\\n");
 console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: planning ? "Planning…" : "Checking…" } }));
-console.log(JSON.stringify({ type: "tool_execution_start", toolName: "bash", args: { command: "npm test" } }));
+console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "test-1", toolName: "bash", args: { command: "npm test" } }));
+console.log(JSON.stringify({ type: "tool_execution_update", toolCallId: "test-1", partialResult: { content: [{ type: "text", text: "Running tests" }] } }));
+console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "test-1", toolName: "bash", result: { content: [{ type: "text", text: "108 tests passed" }] }, isError: false }));
 const text = planning
   ? '{"ready":true}'
   : '{"complete":false,"feedback":"The integration test has not passed."}';
@@ -56,9 +58,13 @@ console.log(JSON.stringify({ type: "agent_settled", aborted: false }));
         expect.arrayContaining([
           { phase: "planning", text: "Planning…", type: "text" },
           { phase: "planning", text: "$ npm test", type: "tool" },
+          expect.objectContaining({ phase: "planning", text: "  Running tests", type: "result" }),
+          expect.objectContaining({ phase: "planning", text: "  108 tests passed", type: "result" }),
           expect.objectContaining({ phase: "planning", type: "checklist" }),
           { phase: "evaluation", text: "Checking…", type: "text" },
           { phase: "evaluation", text: "$ npm test", type: "tool" },
+          expect.objectContaining({ phase: "evaluation", text: "  Running tests", type: "result" }),
+          expect.objectContaining({ phase: "evaluation", text: "  108 tests passed", type: "result" }),
         ]),
       );
     } finally {

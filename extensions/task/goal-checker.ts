@@ -30,9 +30,10 @@ ${EVIDENCE_PROMPT}`;
 export type Phase = "planning" | "evaluation";
 
 export interface Update {
+  readonly id?: string;
   readonly phase: Phase;
   readonly text: string;
-  readonly type: "status" | "text" | "tool" | "checklist";
+  readonly type: "status" | "text" | "tool" | "result" | "checklist";
 }
 
 export interface T {
@@ -66,7 +67,7 @@ export interface Operations {
   readonly initialize: (checker: T, signal: AbortSignal) => Result.ResultAsync<void, Error>;
 }
 
-function summarizeTool(name: string, args: unknown): string {
+export function summarizeTool(name: string, args: unknown): string {
   const input = args as Record<string, unknown> | undefined;
   let detail = "";
   if (name === "bash" && typeof input?.command === "string") detail = `$ ${input.command}`;
@@ -80,6 +81,19 @@ function summarizeTool(name: string, args: unknown): string {
     }
   }
   return detail.length > 240 ? `${detail.slice(0, 239)}…` : detail;
+}
+
+export function extractToolOutput(result: unknown): string {
+  if (typeof result !== "object" || result === null || !("content" in result) || !Array.isArray(result.content))
+    return "";
+  const output = result.content
+    .filter(
+      (part): part is { text: string } =>
+        typeof part === "object" && part !== null && "text" in part && typeof part.text === "string",
+    )
+    .map((part) => part.text)
+    .join("\n");
+  return output.length > 12000 ? `${output.slice(0, 12000)}\n… output truncated in actor view` : output;
 }
 
 /**
@@ -234,6 +248,10 @@ async function runChecker({
           message?: unknown;
           toolName?: string;
           args?: unknown;
+          toolCallId?: string;
+          result?: unknown;
+          partialResult?: unknown;
+          isError?: boolean;
           assistantMessageEvent?: { type?: string; delta?: string };
         };
         output = GoalRunOutput.accept(output, event);
@@ -258,6 +276,26 @@ async function runChecker({
               text: summarizeTool(toolName, args),
               type: "tool",
             });
+          })
+          .with({ type: "tool_execution_update" }, ({ partialResult, toolCallId }) => {
+            const output = extractToolOutput(partialResult);
+            if (output)
+              config.onUpdate?.({
+                id: toolCallId,
+                phase,
+                text: `  ${output}`,
+                type: "result",
+              });
+          })
+          .with({ type: "tool_execution_end" }, ({ result, isError, toolCallId }) => {
+            const output = extractToolOutput(result);
+            if (output || isError)
+              config.onUpdate?.({
+                id: toolCallId,
+                phase,
+                text: `${isError ? "✗ " : "  "}${output || "Tool failed"}`,
+                type: "result",
+              });
           })
           .otherwise(() => undefined);
       } catch (error) {

@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import * as TaskArgs from "./arguments.js";
 import * as GoalChecker from "./goal-checker.js";
 import * as Evidence from "./goal-evidence.js";
+import * as GoalInputRoute from "./goal-input-route.js";
 import * as GoalUser from "./goal-user.js";
 import * as GoalStore from "./goal-store.js";
 import * as GoalRoleEntry from "./goal-role-entry.js";
@@ -21,7 +22,7 @@ const USAGE = [
   '  /task --goal "<prompt>" --implementer-model provider/id --checker-model provider/id',
   '  /task --goal "<prompt>" -d',
   "  /task --status",
-  "  /task --evaluator  (toggle evaluator detail; Ctrl+Alt+E)",
+  "  /task --evaluator  (toggle evaluator view; Ctrl+Alt+E, scroll with Alt+PgUp/PgDn or Ctrl+Alt+K/J)",
   "  /task --list",
   "  /task --resume [id]",
   "  /task --stop",
@@ -63,6 +64,8 @@ function setStatus(ctx: ExtensionContext, task?: Task.T): void {
 }
 
 function showTaskRole(runtime: Runtime, { active, ctx, role }: ActiveContext & { role: GoalStreamDisplay.Role }): void {
+  if (runtime.task === active) GoalInputRoute.show(ctx, GoalInputRoute.select(active));
+  else GoalInputRoute.clear(ctx);
   const previous = active.display.state.active;
   if (previous === role) return;
   if (ctx.mode === "tui") {
@@ -282,7 +285,8 @@ function buildCheckerConfig(
       launchArgs: launchArgs.value,
       model: { id: model.id, provider: model.provider },
       onUpdate: (update) => {
-        if (runtime.task === active) GoalStreamDisplay.update(active.display, update);
+        if (runtime.task === active && (active.state.phase === "planning" || active.state.phase === "checking"))
+          GoalStreamDisplay.update(active.display, update);
       },
       projectTrusted: ctx.isProjectTrusted(),
       prompt: active.state.prompt,
@@ -571,6 +575,7 @@ function shutdown(runtime: Runtime, ctx: ExtensionContext): void {
   runtime.selection = undefined;
   const active = runtime.task;
   runtime.task = undefined;
+  GoalInputRoute.clear(ctx);
   if (active) {
     saveRecord(runtime, { active, ctx }, { status: "paused", updates: active.userUpdates });
     Session.dispose(active, runtime.checkerModule);
@@ -653,6 +658,22 @@ export default function registerTaskExtension(pi: ExtensionAPI, options: Options
     if (runtime.task && event.assistantMessageEvent.type === "text_delta")
       GoalStreamDisplay.showWorkerText(runtime.task.display, event.assistantMessageEvent.delta);
   });
+  pi.on("tool_execution_start", (event) => {
+    if (runtime.task)
+      GoalStreamDisplay.showWorkerTool(
+        runtime.task.display,
+        `→ ${GoalChecker.summarizeTool(event.toolName, event.args)}`,
+      );
+  });
+  pi.on("tool_execution_end", (event) => {
+    if (!runtime.task) return;
+    const output = GoalChecker.extractToolOutput(event.result);
+    if (output || event.isError)
+      GoalStreamDisplay.showWorkerTool(
+        runtime.task.display,
+        `${event.isError ? "✗ " : "  "}${output || "Tool failed"}`,
+      );
+  });
   pi.on("agent_settled", (event, ctx) => {
     // The checker may wait for a new main-agent turn; do not block this event.
     void handleSettled(runtime, { aborted: event.aborted, ctx });
@@ -665,5 +686,29 @@ export default function registerTaskExtension(pi: ExtensionAPI, options: Options
   pi.registerShortcut(Key.ctrlAlt("e"), {
     description: "Toggle goal evaluator detail",
     handler: (ctx) => start(runtime, { args: "--evaluator", ctx }),
+  });
+  pi.registerShortcut(Key.ctrlAlt("k"), {
+    description: "Scroll goal actor view up",
+    handler: () => {
+      if (runtime.task) GoalStreamDisplay.scroll(runtime.task.display, 10);
+    },
+  });
+  pi.registerShortcut(Key.ctrlAlt("j"), {
+    description: "Scroll goal actor view down",
+    handler: () => {
+      if (runtime.task) GoalStreamDisplay.scroll(runtime.task.display, -10);
+    },
+  });
+  pi.registerShortcut(Key.alt("pageUp"), {
+    description: "Page goal actor view up",
+    handler: () => {
+      if (runtime.task) GoalStreamDisplay.scrollPage(runtime.task.display, "up");
+    },
+  });
+  pi.registerShortcut(Key.alt("pageDown"), {
+    description: "Page goal actor view down",
+    handler: () => {
+      if (runtime.task) GoalStreamDisplay.scrollPage(runtime.task.display, "down");
+    },
   });
 }

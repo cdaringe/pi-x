@@ -1,4 +1,5 @@
 import { Result } from "@praha/byethrow";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import taskExtension from "../index.js";
@@ -128,6 +129,7 @@ function createHarness(
 }
 
 beforeEach(() => {
+  initTheme("dark", false);
   vi.restoreAllMocks();
   vi.useFakeTimers();
 });
@@ -407,16 +409,30 @@ describe("goal task loop", () => {
     const harness = createHarness({ goalChecker: checker, launchArgs: [] });
     await harness.command('--goal "program device" -d');
     await harness.emit("agent_settled", { aborted: false });
-    const widget = harness.setWidget.mock.calls[0]?.[1]({ requestRender: vi.fn() }, harness.context.ui.theme);
+    const widget = harness.setWidget.mock.calls[0]?.[1](
+      { mode: "fullscreen", requestRender: vi.fn(), terminal: { rows: 40 } },
+      harness.context.ui.theme,
+    );
     expect(harness.setStatus).toHaveBeenCalledWith("task-roles", expect.stringContaining("Implementer answering"));
+    expect(harness.setWidget).toHaveBeenCalledWith(
+      "task-input-route",
+      [expect.stringContaining("You → Implementer · evaluator waits for the implementer's evidence reply")],
+      { placement: "belowEditor" },
+    );
     expect(widget.render(100)[0]).toContain("Evidence exchange");
-    expect(widget.render(100)[1]).toContain("Implementer");
-    expect(widget.render(100)[1]).toContain("Evaluator");
+    expect(widget.render(100)[2]).toContain("Implementer");
+    expect(widget.render(100)[2]).toContain("Evaluator");
     await harness.emit("message_update", {
       assistantMessageEvent: { delta: "Checking the device", type: "text_delta" },
     });
+    await harness.emit("tool_execution_start", { args: { command: "device status" }, toolName: "bash" });
+    await harness.emit("tool_execution_end", {
+      isError: false,
+      result: { content: [{ text: "Device ready", type: "text" }] },
+    });
     await vi.advanceTimersByTimeAsync(840);
     expect(widget.render(100).join("\n")).toContain("Checking the device");
+    expect(widget.render(100).join("\n")).toContain("Device ready");
     await harness.emit("input", { source: "interactive", text: "I turned it on" });
     await harness.emit("agent_end", { messages: [{ content: "The device is now on", role: "assistant" }] });
     await harness.emit("agent_settled", { aborted: false });
@@ -777,23 +793,55 @@ describe("goal task loop", () => {
       kind: "work",
     });
     expect(harness.setWidget).toHaveBeenCalledWith("task-goal-stream", expect.any(Function));
-    const widget = harness.setWidget.mock.calls[0]?.[1]({ requestRender: vi.fn() }, harness.context.ui.theme);
+    expect(harness.setWidget).toHaveBeenCalledWith(
+      "task-input-route",
+      [expect.stringContaining("You → Goal update · queued for the planner")],
+      { placement: "belowEditor" },
+    );
+    expect(harness.setWidget).toHaveBeenCalledWith(
+      "task-input-route",
+      [expect.stringContaining("You → Implementer · main Pi conversation")],
+      { placement: "belowEditor" },
+    );
+    const widget = harness.setWidget.mock.calls[0]?.[1](
+      { mode: "fullscreen", requestRender: vi.fn(), terminal: { rows: 40 } },
+      harness.context.ui.theme,
+    );
     expect(widget.render(120)).toEqual([]);
     expect(harness.setStatus).toHaveBeenCalledWith("task-roles", expect.stringContaining("Implementer"));
+    expect(widget.handleMouse({ type: "wheel", wheelDelta: -3 })).toBeUndefined();
     await harness.emit("tool_execution_start", { toolName: "read" });
     expect(widget.render(120)).toEqual([]);
+    vi.mocked(checker.create).mock.calls[0]?.[0].onUpdate?.({
+      phase: "evaluation",
+      text: "stale evaluator event",
+      type: "text",
+    });
 
     await harness.command("--evaluator");
-    expect(widget.render(120).join("\n")).toContain("- [ ] Run integration tests");
+    expect(widget.render(120)).toHaveLength(28);
+    expect(widget.render(120)[0]).toContain("Wheel");
+    expect(widget.render(120).join("\n")).toContain("Run integration tests");
+    expect(widget.render(120).join("\n")).not.toContain("stale evaluator event");
+    expect(widget.handleMouse({ type: "wheel", wheelDelta: -3 })).toEqual({ handled: true });
+    expect(widget.render(120)[0]).toContain("History");
+    expect(widget.handleMouse({ type: "wheel", wheelDelta: 3 })).toEqual({ handled: true });
+    expect(widget.render(120)[0]).toContain("Evaluator idle · last run");
 
     await harness.emit("agent_settled", { aborted: false });
     expect(order).toContain("evaluate-incomplete");
+    expect(widget.render(120)).toEqual([]);
+    expect(harness.setStatus).toHaveBeenCalledWith("task-roles", expect.stringContaining("Evaluator idle ▸"));
     expect(harness.appendEntry).toHaveBeenCalledWith("task-implementer-boundary", {
       edge: "end",
       kind: "work",
     });
     expect(harness.sendUserMessage).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1000);
+    expect(harness.setStatus).toHaveBeenCalledWith(
+      "task-roles",
+      expect.stringContaining("Active: Implementer · Evaluator idle ▸"),
+    );
     expect(harness.sendUserMessage).toHaveBeenLastCalledWith(
       expect.stringContaining("The integration test still fails."),
     );
@@ -803,6 +851,7 @@ describe("goal task loop", () => {
     expect(checker.dispose).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(0);
     expect(harness.notify).toHaveBeenLastCalledWith("Task goal: independently verified after 2 run(s)", "info");
+    expect(harness.setWidget).toHaveBeenCalledWith("task-input-route", undefined);
   });
 
   it("backs off exponentially up to 60 seconds and keeps continuing", async () => {
